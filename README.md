@@ -1,7 +1,5 @@
 <p align="center">
-  <img src="images/github-copilot-logo.svg" alt="GitHub Copilot" height="60">
-  &nbsp;&nbsp;&nbsp;&nbsp;
-  <img src="images/matrix-logo.svg" alt="Matrix" height="40" style="background:#1a1a1a; padding:4px 8px; border-radius:4px;">
+  <img src="images/mobile-screenshot.png" alt="FluffyChat screenshot showing Copilot agent conversation" width="300">
 </p>
 
 # Agent Synapse Proxy
@@ -22,10 +20,6 @@ Phone (FluffyChat)            Developer Machine
 ```
 
 Each working directory gets its own Matrix room. Send a message from your phone → the bot forwards it to Copilot → response appears in the chat.
-
-<p align="center">
-  <img src="images/mobile-screenshot.png" alt="FluffyChat screenshot showing Copilot agent conversation" width="300">
-</p>
 
 ## Quickstart (~10 minutes)
 
