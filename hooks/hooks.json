@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=sessionStart bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='sessionStart'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 10
+      }
+    ],
+    "sessionEnd": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=sessionEnd bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='sessionEnd'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 10
+      }
+    ],
+    "userPromptSubmitted": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=userPromptSubmitted bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='userPromptSubmitted'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 10
+      }
+    ],
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=preToolUse bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='preToolUse'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 10
+      }
+    ],
+    "postToolUse": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=postToolUse bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='postToolUse'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 15
+      }
+    ],
+    "errorOccurred": [
+      {
+        "type": "command",
+        "bash": "HOOK_TYPE=errorOccurred bash \"${HOOKS_SCRIPT_DIR:-$HOME/.copilot-hooks}/forward-to-matrix.sh\"",
+        "powershell": "$env:HOOK_TYPE='errorOccurred'; & \"$HOME\\.copilot-hooks\\forward-to-matrix.ps1\"",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}

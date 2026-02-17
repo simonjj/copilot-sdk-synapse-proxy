@@ -1,0 +1,21 @@
+{$MATRIX_DOMAIN} {
+    # Client API
+    handle /_matrix/* {
+        reverse_proxy synapse:8008
+    }
+
+    # Well-known for client discovery
+    handle /.well-known/matrix/* {
+        reverse_proxy synapse:8008
+    }
+
+    # Block admin API from the internet
+    handle /_synapse/admin/* {
+        respond "Forbidden" 403
+    }
+
+    # Block everything else
+    handle {
+        respond "Not Found" 404
+    }
+}
