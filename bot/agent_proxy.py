@@ -72,6 +72,7 @@ class CopilotAgent:
         self.config = config
         self.copilot_client: CopilotClient | None = None
         self.session = None
+        self.resumed = False
 
     async def start(self):
         """Initialize the Copilot SDK client, resuming a prior session if available."""
@@ -85,7 +86,29 @@ class CopilotAgent:
         self.copilot_client = CopilotClient(client_opts)
         await self.copilot_client.start()
 
-        session_cfg = {
+        session_cfg = self._session_cfg()
+
+        # Try resuming a prior session
+        saved_id = load_saved_session(self.config)
+        self.resumed = False
+        if saved_id:
+            try:
+                session_cfg["session_id"] = saved_id
+                self.session = await self.copilot_client.create_session(session_cfg)
+                logger.info("Resumed prior Copilot session %s", saved_id)
+                self.resumed = True
+            except Exception as e:
+                logger.warning("Could not resume session %s: %s -- starting fresh", saved_id, e)
+                session_cfg.pop("session_id", None)
+
+        if not self.resumed:
+            self.session = await self.copilot_client.create_session(session_cfg)
+            logger.info("Created new Copilot session (model: %s)", self.config.copilot_model)
+
+        self._save_session_id()
+
+    def _session_cfg(self):
+        return {
             "model": self.config.copilot_model,
             "streaming": True,
             "systemMessage": {
@@ -99,93 +122,112 @@ class CopilotAgent:
             },
         }
 
-        # Try resuming a prior session
-        saved_id = load_saved_session(self.config)
-        resumed = False
-        if saved_id:
-            try:
-                session_cfg["session_id"] = saved_id
-                self.session = await self.copilot_client.create_session(session_cfg)
-                logger.info("Resumed prior Copilot session %s", saved_id)
-                resumed = True
-            except Exception as e:
-                logger.warning("Could not resume session %s: %s — starting fresh", saved_id, e)
-                session_cfg.pop("session_id", None)
-
-        if not resumed:
-            self.session = await self.copilot_client.create_session(session_cfg)
-            logger.info("Created new Copilot session (model: %s)", self.config.copilot_model)
-
-        # Persist session ID for next time
+    def _save_session_id(self):
         if hasattr(self.session, "session_id") and self.session.session_id:
             save_session(self.config, self.session.session_id)
 
-        self.resumed = resumed
+    async def _recover(self):
+        """Restart the Copilot CLI process and create a fresh session."""
+        logger.warning("Recovering Copilot session (CLI process likely died)...")
+        try:
+            if self.copilot_client:
+                await self.copilot_client.stop()
+        except Exception:
+            pass
+
+        client_opts = {"cwd": self.config.work_dir}
+        if self.config.copilot_cli_url:
+            client_opts["cli_url"] = self.config.copilot_cli_url
+
+        self.copilot_client = CopilotClient(client_opts)
+        await self.copilot_client.start()
+        self.session = await self.copilot_client.create_session(self._session_cfg())
+        self._save_session_id()
+        self.resumed = False
+        logger.info("Recovery complete -- new session created")
 
     async def send(self, prompt: str, on_activity=None):
         """Send a message to Copilot. Event-driven, no timeout.
-
-        Args:
-            prompt: The user message.
-            on_activity: Optional async callback(event_type, text) for live progress.
+        Auto-recovers if the CLI process died (e.g. laptop sleep).
         """
-        if not self.session:
-            return "❌ Copilot session not initialized"
+        for attempt in range(2):
+            if not self.session:
+                return "❌ Copilot session not initialized"
 
-        collected = []
-        done_event = asyncio.Event()
-        error_holder = [None]
-        loop = asyncio.get_event_loop()
+            collected = []
+            done_event = asyncio.Event()
+            error_holder = [None]
+            loop = asyncio.get_event_loop()
 
-        def handle_event(event):
-            et = event.type
-            if et == SessionEventType.ASSISTANT_MESSAGE_DELTA:
-                chunk = event.data.delta_content
-                if chunk:
-                    collected.append(chunk)
-            elif et == SessionEventType.TOOL_EXECUTION_START:
-                name = getattr(event.data, 'tool_name', None) or '?'
-                if on_activity:
-                    loop.create_task(on_activity("tool_start", name))
-            elif et == SessionEventType.TOOL_EXECUTION_COMPLETE:
-                name = getattr(event.data, 'tool_name', None) or '?'
-                if on_activity:
-                    loop.create_task(on_activity("tool_done", name))
-            elif et == SessionEventType.ASSISTANT_INTENT:
-                intent = getattr(event.data, 'intent', None)
-                if intent and on_activity:
-                    loop.create_task(on_activity("intent", intent))
-            elif et == SessionEventType.SESSION_IDLE:
-                done_event.set()
-            elif et == SessionEventType.SESSION_ERROR:
-                msg = getattr(event.data, 'message', str(event.data))
-                error_holder[0] = msg
-                done_event.set()
+            def handle_event(event):
+                et = event.type
+                if et == SessionEventType.ASSISTANT_MESSAGE_DELTA:
+                    chunk = event.data.delta_content
+                    if chunk:
+                        collected.append(chunk)
+                elif et == SessionEventType.TOOL_EXECUTION_START:
+                    name = getattr(event.data, 'tool_name', None) or '?'
+                    if on_activity:
+                        loop.create_task(on_activity("tool_start", name))
+                elif et == SessionEventType.TOOL_EXECUTION_COMPLETE:
+                    name = getattr(event.data, 'tool_name', None) or '?'
+                    if on_activity:
+                        loop.create_task(on_activity("tool_done", name))
+                elif et == SessionEventType.ASSISTANT_INTENT:
+                    intent = getattr(event.data, 'intent', None)
+                    if intent and on_activity:
+                        loop.create_task(on_activity("intent", intent))
+                elif et == SessionEventType.SESSION_IDLE:
+                    done_event.set()
+                elif et == SessionEventType.SESSION_ERROR:
+                    msg = getattr(event.data, 'message', str(event.data))
+                    error_holder[0] = msg
+                    done_event.set()
 
-        unsubscribe = self.session.on(handle_event)
+            unsubscribe = self.session.on(handle_event)
 
-        try:
-            logger.info("Sending to Copilot: %s", prompt[:100])
-            await self.session.send({"prompt": prompt})
-            await done_event.wait()
+            try:
+                logger.info("Sending to Copilot (attempt %d): %s", attempt + 1, prompt[:100])
+                await self.session.send({"prompt": prompt})
+                await done_event.wait()
 
-            if error_holder[0]:
+                if error_holder[0]:
+                    partial = "".join(collected).strip()
+                    if partial:
+                        return f"{partial}\n\n⚠️ *Error: {error_holder[0]}*"
+                    return f"❌ Copilot error: {error_holder[0]}"
+
+                response = "".join(collected)
+                logger.info("Copilot responded: %d chars", len(response))
+                return response if response.strip() else "(empty response)"
+            except Exception as e:
+                unsubscribe()
+                err_msg = str(e)
+                # Session lost (laptop sleep, CLI crash) — recover and retry once
+                if attempt == 0 and ("Session not found" in err_msg or "broken pipe" in err_msg.lower()
+                        or "connection" in err_msg.lower()):
+                    logger.warning("Session lost, recovering: %s", err_msg)
+                    if on_activity:
+                        await on_activity("intent", "Reconnecting to Copilot...")
+                    try:
+                        await self._recover()
+                        continue  # retry with fresh session
+                    except Exception as re:
+                        logger.error("Recovery failed: %s", re)
+                        return f"❌ Copilot crashed and recovery failed: {re}"
+
+                logger.exception("Copilot SDK error")
                 partial = "".join(collected).strip()
                 if partial:
-                    return f"{partial}\n\n⚠️ *Error: {error_holder[0]}*"
-                return f"❌ Copilot error: {error_holder[0]}"
+                    return f"{partial}\n\n⚠️ *(error: {e})*"
+                return f"❌ Copilot error: {e}"
+            finally:
+                try:
+                    unsubscribe()
+                except Exception:
+                    pass
 
-            response = "".join(collected)
-            logger.info("Copilot responded: %d chars", len(response))
-            return response if response.strip() else "(empty response)"
-        except Exception as e:
-            logger.exception("Copilot SDK error")
-            partial = "".join(collected).strip()
-            if partial:
-                return f"{partial}\n\n⚠️ *(error: {e})*"
-            return f"❌ Copilot error: {e}"
-        finally:
-            unsubscribe()
+        return "❌ Copilot error: failed after retries"
 
     async def stop(self):
         if self.copilot_client:
@@ -247,8 +289,13 @@ class AgentProxyBot:
             f"Send me a message and I'll forward it to GitHub Copilot."
         )
 
-        # Sync forever
-        await self.matrix_client.sync_forever(timeout=30000, full_state=True)
+        # Sync forever — auto-reconnect on transient network errors
+        while True:
+            try:
+                await self.matrix_client.sync_forever(timeout=30000, full_state=True)
+            except Exception as e:
+                logger.warning("Matrix sync interrupted: %s — reconnecting in 5s", e)
+                await asyncio.sleep(5)
 
     async def _ensure_room(self):
         """Create or find existing room for this working directory."""
