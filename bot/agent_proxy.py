@@ -12,7 +12,6 @@ import os
 import sys
 from pathlib import Path
 
-import aiohttp
 from nio import (
     AsyncClient,
     InviteMemberEvent,
@@ -123,31 +122,56 @@ class CopilotAgent:
 
         self.resumed = resumed
 
-    async def send(self, prompt: str) -> str:
-        """Send a message to Copilot and collect the full response."""
+    async def send(self, prompt: str, on_delta=None) -> str:
+        """Send a message to Copilot. Event-driven — no timeout.
+
+        Args:
+            prompt: The user message.
+            on_delta: Optional async callback(text) called with each streamed chunk.
+        """
         if not self.session:
             return "❌ Copilot session not initialized"
 
         collected = []
+        done_event = asyncio.Event()
+        error_holder = [None]
 
         def handle_event(event):
             if event.type == SessionEventType.ASSISTANT_MESSAGE_DELTA:
-                collected.append(event.data.delta_content)
+                chunk = event.data.delta_content
+                if chunk:
+                    collected.append(chunk)
+                    if on_delta:
+                        asyncio.get_event_loop().create_task(on_delta(chunk))
+            elif event.type == SessionEventType.SESSION_IDLE:
+                done_event.set()
+            elif event.type == SessionEventType.SESSION_ERROR:
+                msg = getattr(event.data, 'message', str(event.data))
+                error_holder[0] = msg
+                done_event.set()
 
         unsubscribe = self.session.on(handle_event)
 
         try:
             logger.info("Sending to Copilot: %s", prompt[:100])
-            await self.session.send_and_wait({"prompt": prompt}, timeout=600)
+            await self.session.send({"prompt": prompt})
+            # Wait indefinitely for session.idle — no timeout
+            await done_event.wait()
+
+            if error_holder[0]:
+                partial = "".join(collected).strip()
+                if partial:
+                    return f"{partial}\n\n⚠️ *Error: {error_holder[0]}*"
+                return f"❌ Copilot error: {error_holder[0]}"
+
             response = "".join(collected)
             logger.info("Copilot responded: %d chars", len(response))
             return response if response.strip() else "(empty response)"
         except Exception as e:
             logger.exception("Copilot SDK error")
-            # Return any partial response collected before the error
             partial = "".join(collected).strip()
             if partial:
-                return f"{partial}\n\n⚠️ *(response may be incomplete: {e})*"
+                return f"{partial}\n\n⚠️ *(error: {e})*"
             return f"❌ Copilot error: {e}"
         finally:
             unsubscribe()
