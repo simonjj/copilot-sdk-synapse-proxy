@@ -138,12 +138,16 @@ class CopilotAgent:
 
         try:
             logger.info("Sending to Copilot: %s", prompt[:100])
-            await self.session.send_and_wait({"prompt": prompt})
+            await self.session.send_and_wait({"prompt": prompt}, timeout=600)
             response = "".join(collected)
             logger.info("Copilot responded: %d chars", len(response))
             return response if response.strip() else "(empty response)"
         except Exception as e:
             logger.exception("Copilot SDK error")
+            # Return any partial response collected before the error
+            partial = "".join(collected).strip()
+            if partial:
+                return f"{partial}\n\n⚠️ *(response may be incomplete: {e})*"
             return f"❌ Copilot error: {e}"
         finally:
             unsubscribe()
