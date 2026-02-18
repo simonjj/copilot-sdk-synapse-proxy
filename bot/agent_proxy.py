@@ -122,12 +122,12 @@ class CopilotAgent:
 
         self.resumed = resumed
 
-    async def send(self, prompt: str, on_delta=None) -> str:
-        """Send a message to Copilot. Event-driven — no timeout.
+    async def send(self, prompt: str, on_activity=None):
+        """Send a message to Copilot. Event-driven, no timeout.
 
         Args:
             prompt: The user message.
-            on_delta: Optional async callback(text) called with each streamed chunk.
+            on_activity: Optional async callback(event_type, text) for live progress.
         """
         if not self.session:
             return "❌ Copilot session not initialized"
@@ -135,17 +135,29 @@ class CopilotAgent:
         collected = []
         done_event = asyncio.Event()
         error_holder = [None]
+        loop = asyncio.get_event_loop()
 
         def handle_event(event):
-            if event.type == SessionEventType.ASSISTANT_MESSAGE_DELTA:
+            et = event.type
+            if et == SessionEventType.ASSISTANT_MESSAGE_DELTA:
                 chunk = event.data.delta_content
                 if chunk:
                     collected.append(chunk)
-                    if on_delta:
-                        asyncio.get_event_loop().create_task(on_delta(chunk))
-            elif event.type == SessionEventType.SESSION_IDLE:
+            elif et == SessionEventType.TOOL_EXECUTION_START:
+                name = getattr(event.data, 'tool_name', None) or '?'
+                if on_activity:
+                    loop.create_task(on_activity("tool_start", name))
+            elif et == SessionEventType.TOOL_EXECUTION_COMPLETE:
+                name = getattr(event.data, 'tool_name', None) or '?'
+                if on_activity:
+                    loop.create_task(on_activity("tool_done", name))
+            elif et == SessionEventType.ASSISTANT_INTENT:
+                intent = getattr(event.data, 'intent', None)
+                if intent and on_activity:
+                    loop.create_task(on_activity("intent", intent))
+            elif et == SessionEventType.SESSION_IDLE:
                 done_event.set()
-            elif event.type == SessionEventType.SESSION_ERROR:
+            elif et == SessionEventType.SESSION_ERROR:
                 msg = getattr(event.data, 'message', str(event.data))
                 error_holder[0] = msg
                 done_event.set()
@@ -155,7 +167,6 @@ class CopilotAgent:
         try:
             logger.info("Sending to Copilot: %s", prompt[:100])
             await self.session.send({"prompt": prompt})
-            # Wait indefinitely for session.idle — no timeout
             await done_event.wait()
 
             if error_holder[0]:
@@ -285,10 +296,16 @@ class AgentProxyBot:
             return
 
         logger.info("Received from %s: %s", event.sender, user_msg[:100])
-        await self._send("⏳ Thinking...")
+        await self._send("⏳ Working...")
 
-        # Forward to Copilot SDK
-        result = await self.copilot_agent.send(user_msg)
+        # Stream tool/intent activity to Matrix as it happens
+        async def on_activity(event_type, text):
+            if event_type == "tool_start":
+                await self._send(f"🔧 `{text}`")
+            elif event_type == "intent":
+                await self._send(f"💭 {text}")
+
+        result = await self.copilot_agent.send(user_msg, on_activity=on_activity)
 
         # Split long responses for Matrix
         max_len = 30000
